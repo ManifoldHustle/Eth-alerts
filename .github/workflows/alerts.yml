@@ -1,0 +1,54 @@
+name: eth-alerts
+
+on:
+  schedule:
+    # 2 minutes after each 15m candle closes (GitHub may run it a few minutes late)
+    - cron: "2,17,32,47 * * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "run | test (send a Telegram test) | status (send a status message)"
+        default: "run"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: eth-alerts
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run the bot
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          BALANCE: ${{ vars.BALANCE }}
+          RISK_PCT: ${{ vars.RISK_PCT }}
+          LEVERAGE: ${{ vars.LEVERAGE }}
+          MIN_RR: ${{ vars.MIN_RR }}
+          SL_ATR_MULT: ${{ vars.SL_ATR_MULT }}
+          VOL_REQUIRED: ${{ vars.VOL_REQUIRED }}
+          BTC_FILTER: ${{ vars.BTC_FILTER }}
+          NEAR_MISS: ${{ vars.NEAR_MISS }}
+          NEAR_RR_FLOOR: ${{ vars.NEAR_RR_FLOOR }}
+          MODE: ${{ github.event.inputs.mode }}
+        run: |
+          case "$MODE" in
+            test) python alert_bot.py --test-telegram ;;
+            status) python alert_bot.py --status ;;
+            *) python alert_bot.py ;;
+          esac
+      - name: Save alert memory (prevents duplicate alerts)
+        run: |
+          git config user.name "alert-bot"
+          git config user.email "alert-bot@users.noreply.github.com"
+          git add state.json 2>/dev/null || true
+          git diff --cached --quiet || (git commit -m "update alert memory" && git push)
