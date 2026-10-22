@@ -59,6 +59,8 @@ MAX_ATR_PCT = float(_env("MAX_ATR_PCT", "0"))    # >0: skip setups when 1h ATR i
 MAX_VOL_RATIO = float(_env("MAX_VOL_RATIO", "0"))  # >0: skip setups when the confirmation candle's volume is above this x its average
 FLIPPED_ONLY = _env("FLIPPED_ONLY", "0") == "1"  # 1: only trade zones that were broken and flipped (skip plain swing highs/lows)
 SINGLE_TP = TP1_PORTION >= 0.999
+STRATEGIES = {x.strip() for x in _env("STRATEGIES", "pullback").lower().split(",") if x.strip()}  # pullback, range
+RANGE_HOURS = int(_env("RANGE_HOURS", "48"))     # how many 1h candles define the range
 ASSET = _env("ASSET", "ETH").upper()             # backtest only: which Coinbase USD market to test (ETH, BTC, SUI, ...)
 DP = 2                                           # price decimals (set from the price level when testing cheap coins)
 ZSTEP = 1.0                                      # size of a "same zone" bucket for de-duplicating alerts
@@ -362,6 +364,66 @@ def find_long(c15, c1h, c4h):
     return full, near, notes
 
 
+
+# ------------------------- range setup finder ----------------------------
+def find_range_long(c15, c1h, c4h):
+    """RANGE strategy (LONG side): when the 4h/1h trends do NOT agree, buy a rejection at the bottom of a
+    clear 1h range and aim for the middle of the range. Returns (full, near, notes)."""
+    notes = []
+    if len(c15) < 60 or len(c1h) < max(60, RANGE_HOURS + 5) or len(c4h) < 40:
+        return None, None, ["not enough candles"]
+    t4, t1 = trend(c4h), trend(c1h)
+    if t4 == t1 and t4 != "mixed":
+        return None, None, ["range: trends are aligned (trend strategy territory)"]
+    a1 = atr(c1h)
+    if not a1:
+        return None, None, ["no ATR"]
+    win = c1h[-RANGE_HOURS:]
+    hi, lo = max(c["h"] for c in win), min(c["l"] for c in win)
+    width = hi - lo
+    if not (2.5 * a1 <= width <= 8.0 * a1):
+        return None, None, [f"range: width {width / a1:.1f} ATR is not a clean range (needs 2.5 to 8)"]
+    if sum(1 for c in win if c["l"] <= lo + 0.2 * width) < 2 or sum(1 for c in win if c["h"] >= hi - 0.2 * width) < 2:
+        return None, None, ["range: edges not tested at least twice"]
+    last = c15[-1]
+    body = last["c"] - last["o"]
+    rng = max(last["h"] - last["l"], 1e-9)
+    vol_ma = sma([c["v"] for c in c15], 20)[-1]
+    vol_ok = vol_ma is not None and last["v"] >= vol_ma
+    zone_top = lo + 0.6 * a1   # same zone thickness the pullback strategy uses
+    touched = last["l"] <= zone_top and last["l"] >= lo - 0.5 * a1
+    closed_out = last["c"] > zone_top and body > 0 and body / rng >= 0.35
+    if not (touched and closed_out):
+        return None, None, ["range: no rejection candle at the bottom edge"]
+    entry = last["c"]
+    sl = min(lo, last["l"]) - SL_ATR_MULT * a1
+    risk = entry - sl
+    if risk < 0.3 * a1:
+        return None, None, ["range: stop too tight"]
+    issues = []
+    cap = abs(entry) * (0.5 / LEVERAGE)
+    if risk > cap * 1.3:
+        return None, None, [f"range: stop far too wide for {LEVERAGE:.0f}x"]
+    if risk > cap:
+        issues.append(f"stop {risk:.1f} pts is wider than the {cap:.1f} pt limit for {LEVERAGE:.0f}x")
+    tp1 = (lo + hi) / 2 - 0.2 * a1
+    if tp1 - entry < 0.8 * risk:
+        return None, None, ["range: middle of the range is too close for the stop"]
+    rr = (tp1 - entry) / risk
+    if rr < MIN_RR:
+        if rr >= NEAR_RR_FLOOR:
+            issues.append(f"R:R {rr:.2f} is below your minimum {MIN_RR}")
+        else:
+            return None, None, [f"range: R:R {rr:.2f} too low"]
+    if VOL_REQUIRED and not vol_ok:
+        issues.append("volume on the confirmation candle is below its 20-candle average")
+    cand = {"level": lo, "label": "range low (bounce to mid)", "zone_top": zone_top, "entry": entry, "sl": sl,
+            "risk": risk, "tp1": tp1, "tp2": None, "w": (1.0, 0.0), "rr": rr, "score": 4 + (1 if vol_ok else 0),
+            "vol_ok": vol_ok, "atr1h": a1, "t4": t4, "t1": t1, "issues": issues, "range": True,
+            "candle_close_t": last["t"] + SEC["15m"]}
+    return (cand, None, notes) if not issues else (None, cand, notes)
+
+
 def to_short(s):
     """Convert a mirrored long setup back to real prices."""
     if s is None:
@@ -370,6 +432,11 @@ def to_short(s):
     for k in ("level", "zone_top", "entry", "sl", "tp1"):
         o[k] = -s[k]
     o["tp2"] = -s["tp2"] if s["tp2"] else None
+    if s.get("range"):
+        flip = {"bull": "bear", "bear": "bull"}
+        o["t4"], o["t1"] = flip.get(s["t4"], s["t4"]), flip.get(s["t1"], s["t1"])
+        o["label"] = s["label"].replace("range low (bounce to mid)", "range high (fade to mid)")
+        return o
     o["t4"], o["t1"] = "bear", "bear"
     o["label"] = (s["label"].replace("broken 1h high (now support)", "broken 1h low (now resistance)")
                   .replace("1h swing low", "1h swing high"))
@@ -766,6 +833,7 @@ def alert_features(side, sx, c15, c1h, btc, now):
         f["weekday"] = "weekend" if et.weekday() >= 5 else "weekday"
     except Exception:
         pass
+    f["strategy"] = "range" if sx["label"].startswith("range") else "pullback"
     f["zone"] = sx["label"]
     f["trend 4h"] = sx.get("t4", "?")
     f["trend 1h"] = sx.get("t1", "?")
@@ -824,7 +892,7 @@ def breakdown_report(lg, min_n=12):
     if not sub:
         return "No full alerts to break down."
     out = [f"🔬 BREAKDOWN of {len(sub)} full alerts (groups with fewer than {min_n} alerts are skipped; average R per alert)"]
-    keys = ["trend 4h", "trend 1h", "zone", "session", "weekday", "volatility", "stop size", "volume", "BTC 1h", "ratio", "tp2"]
+    keys = ["strategy", "trend 4h", "trend 1h", "zone", "session", "weekday", "volatility", "stop size", "volume", "BTC 1h", "ratio", "tp2"]
     for k in keys:
         groups = {}
         for a in sub:
@@ -904,7 +972,7 @@ def run_backtest(days):
                        "flipped zones only" if FLIPPED_ONLY else "") if x]
     rep = backtest_report(lg, f"{ASSET} (SL buffer {SL_ATR_MULT} ATR, min R:R {MIN_RR}, {tp_txt}, time stop {TIME_STOP_H:.0f}h, "
                               f"vol {'on' if VOL_REQUIRED else 'off'}, BTC {'on' if btc else 'off'}"
-                              f"{', filters: ' + ', '.join(flt) if flt else ''})")
+                              f"{', filters: ' + ', '.join(flt) if flt else ''}, strategies: {'+'.join(sorted(STRATEGIES))})")
     send(rep + half_report(lg))
     try:
         bd = breakdown_report(lg)
@@ -931,7 +999,7 @@ def filter_reason(sx, c15, c1h):
     """Optional filters (all off by default). Returns why a setup is skipped, or None."""
     if sx is None:
         return None
-    if FLIPPED_ONLY and not sx["label"].startswith("broken"):
+    if FLIPPED_ONLY and not sx["label"].startswith(("broken", "range")):
         return "plain swing level (FLIPPED_ONLY is on)"
     if MAX_ATR_PCT > 0:
         a = atr(c1h)
@@ -946,8 +1014,20 @@ def filter_reason(sx, c15, c1h):
 
 def analyse(data):
     c15, c1h, c4h = data["15m"], data["1h"], data["4h"]
-    lf, ln, n1 = find_long(c15, c1h, c4h)
-    sf, sn, n2 = find_long(mirror(c15), mirror(c1h), mirror(c4h))
+    m15, m1h, m4h = mirror(c15), mirror(c1h), mirror(c4h)
+    if "pullback" in STRATEGIES:
+        lf, ln, n1 = find_long(c15, c1h, c4h)
+        sf, sn, n2 = find_long(m15, m1h, m4h)
+    else:
+        lf = ln = sf = sn = None
+        n1, n2 = [], []
+    if "range" in STRATEGIES:
+        rlf, rln, rn1 = find_range_long(c15, c1h, c4h)
+        rsf, rsn, rn2 = find_range_long(m15, m1h, m4h)
+        best = lambda x, y: y if x is None or (y is not None and y["rr"] > x["rr"]) else x
+        lf, ln = best(lf, rlf), best(ln, rln)
+        sf, sn = best(sf, rsf), best(sn, rsn)
+        n1, n2 = n1 + rn1, n2 + rn2
     out = {"long": (lf, ln), "short": (to_short(sf), to_short(sn))}
     for side in ("long", "short"):
         full, near = out[side]
