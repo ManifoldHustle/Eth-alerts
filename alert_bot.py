@@ -59,6 +59,9 @@ MAX_ATR_PCT = float(_env("MAX_ATR_PCT", "0"))    # >0: skip setups when 1h ATR i
 MAX_VOL_RATIO = float(_env("MAX_VOL_RATIO", "0"))  # >0: skip setups when the confirmation candle's volume is above this x its average
 FLIPPED_ONLY = _env("FLIPPED_ONLY", "0") == "1"  # 1: only trade zones that were broken and flipped (skip plain swing highs/lows)
 SINGLE_TP = TP1_PORTION >= 0.999
+ASSET = _env("ASSET", "ETH").upper()             # backtest only: which Coinbase USD market to test (ETH, BTC, SUI, ...)
+DP = 2                                           # price decimals (set from the price level when testing cheap coins)
+ZSTEP = 1.0                                      # size of a "same zone" bucket for de-duplicating alerts
 RUN_WINDOW_MIN = int(_env("RUN_WINDOW_MIN", "35"))  # only alert on a candle that closed recently
 STATE_FILE = _env("STATE_FILE", "state.json")
 LOG_FILE = _env("LOG_FILE", "alerts_log.json")      # every alert + what happened to it      # remembers alerts already sent (no duplicates)
@@ -312,9 +315,9 @@ def find_long(c15, c1h, c4h):
         buf = 0.2 * a1
         tgt = set()
         for _, h in pivots(c1h[-150:], 3)[0]:
-            tgt.add(round(h, 2))
+            tgt.add(round(h, DP))
         for _, h in pivots(c4h[-120:], 2)[0]:
-            tgt.add(round(h, 2))
+            tgt.add(round(h, DP))
         tgt.add(round(max(c["h"] for c in c15[-96:]), 2))  # 24h high
         ups = sorted(x for x in tgt if x - buf > entry)
         min_dist = max(0.8, MIN_RR) if SINGLE_TP else 0.8  # single TP: nearest level that already gives your ratio
@@ -390,7 +393,7 @@ def build_message(side, s):
     arrow = "🟢 LONG" if side == "long" else "🔴 SHORT"
     kind = s.get("kind", "full")
     sgn = 1 if side == "long" else -1
-    p = lambda x: f"{x:,.2f}"
+    p = lambda x: f"{x:,.{DP}f}"
     lines = [
         (f"{arrow} setup confirmed  ({s['score']}/5)  {fmt_t(s['candle_close_t'])}" if kind == "full"
          else f"🟡 NEAR MISS, NOT a full setup ({side})  {fmt_t(s['candle_close_t'])}"),
@@ -486,9 +489,9 @@ def log_alert(lg, side, s, kind, now):
         return
     lg["alerts"].append({
         "id": aid, "kind": kind, "side": side, "t0": s["candle_close_t"],
-        "label": s["label"], "level": round(s["level"], 2), "entry": round(s["entry"], 2),
-        "sl": round(s["sl"], 2), "tp1": round(s["tp1"], 2),
-        "tp2": round(s["tp2"], 2) if s["tp2"] else None, "risk": round(s["risk"], 2),
+        "label": s["label"], "level": round(s["level"], DP), "entry": round(s["entry"], DP),
+        "sl": round(s["sl"], DP), "tp1": round(s["tp1"], DP),
+        "tp2": round(s["tp2"], DP) if s["tp2"] else None, "risk": round(s["risk"], DP),
         "rr": round(s["rr"], 2), "score": s["score"], "issues": s.get("issues", []),
         "stage": "open", "result": None, "R": None, "closed_t": None})
 
@@ -609,7 +612,7 @@ def watch_trade(data, now, st, tr_in, send_fn=None):
     side = tr_in["side"].upper()
     c15, c1h, c4h = data["15m"], data["1h"], data["4h"]
     a1 = atr(c1h) or 0
-    p = lambda x: f"{x:,.2f}"
+    p = lambda x: f"{x:,.{DP}f}"
 
     def say(key, text):
         if key in done:
@@ -738,7 +741,7 @@ def backtest(c15_all, btc1h_all=None):
             for kind, sx in (("full", full), ("near", near if (NEAR_MISS and not full) else None)):
                 if not sx:
                     continue
-                zk = (kind, side, round(sx["level"]))
+                zk = (kind, side, round(sx["level"] / ZSTEP))
                 if zk in last_zone and now - last_zone[zk] < 4 * 3600:
                     continue
                 last_zone[zk] = now
@@ -805,9 +808,14 @@ def half_report(lg):
     a, b = [x for x in sub if x["t0"] < cut], [x for x in sub if x["t0"] >= cut]
     few = len(a) < 15 or len(b) < 8
     ok = (not few) and sum(x["R"] for x in a) > 0 and sum(x["R"] for x in b) > 0
+    t_end = lg["t_first"] + lg["days"] * 86400
+    old = [x for x in sub if x["t0"] < t_end - 190 * 86400]
+    old_txt = (f"\n   older than the last 190 days (data we had not looked at before): {_stats(old)}"
+               if lg["days"] >= 250 else "")
     return ("\n🧭 SPLIT CHECK (full alerts)\n"
             f"   first {lg['days'] * 2 / 3:.0f} days: {_stats(a)}\n"
-            f"   last {lg['days'] / 3:.0f} days: {_stats(b)}\n"
+            f"   last {lg['days'] / 3:.0f} days: {_stats(b)}"
+            f"{old_txt}\n"
             f"   {'Too few alerts in one part to judge (need 15+ and 8+).' if few else 'Positive in BOTH parts: worth a closer look.' if ok else 'NOT positive in both parts: do not trust it.'}")
 
 
@@ -866,29 +874,35 @@ def backtest_report(lg, label=""):
             d = [a for a in sub if a["side"] == side]
             if d:
                 out.append(f"   {side}: {len(d)} alerts, {sum(a['R'] for a in d):+.1f}R")
-    out.append("Caveats: Coinbase ETH-USD candles (not WEEX), alert-price fills, stop checked first inside a candle, "
+    out.append(f"Caveats: Coinbase {ASSET}-USD candles (not WEEX), alert-price fills, stop checked first inside a candle, "
                "no fees/slippage, overlapping alerts counted separately. A guide, not a promise.")
     return "\n".join(out)
 
 
 def run_backtest(days):
+    global DP, ZSTEP
     end_ts = int(time.time()) // 900 * 900
     start_ts = end_ts - int((days + 14) * 86400)
-    print(f"fetching {days}+14 days of ETH 15m candles...")
-    eth = fetch_coinbase_range("ETH-USD", 900, start_ts, end_ts)
+    print(f"fetching {days}+14 days of {ASSET} 15m candles...")
+    eth = fetch_coinbase_range(f"{ASSET}-USD", 900, start_ts, end_ts)
+    if len(eth) < 3000:
+        raise RuntimeError(f"only {len(eth)} candles for {ASSET}-USD; check the symbol or try fewer days")
+    px = eth[-1]["c"]
+    DP = 2 if px >= 100 else (4 if px >= 1 else 6)
+    ZSTEP = 1.0 if DP == 2 else px * 0.0004
     btc = None
-    if BTC_FILTER:
+    if BTC_FILTER and ASSET != "BTC":
         try:
             print("fetching BTC 1h candles...")
             btc = fetch_coinbase_range("BTC-USD", 3600, start_ts, end_ts)
         except Exception as e:
             print("BTC data unavailable, running without the BTC filter:", e)
-    print(f"{len(eth)} ETH candles; running...")
+    print(f"{len(eth)} {ASSET} candles; running...")
     lg = backtest(eth, btc)
     tp_txt = ("single TP" if SINGLE_TP else f"TP1 {TP1_PORTION * 100:.0f}%" + (f", TP2 at {TP2_R}R" if TP2_R > 0 else ""))
     flt = [x for x in (f"ATR<{MAX_ATR_PCT}%" if MAX_ATR_PCT > 0 else "", f"vol<={MAX_VOL_RATIO}x" if MAX_VOL_RATIO > 0 else "",
                        "flipped zones only" if FLIPPED_ONLY else "") if x]
-    rep = backtest_report(lg, f"(SL buffer {SL_ATR_MULT} ATR, min R:R {MIN_RR}, {tp_txt}, time stop {TIME_STOP_H:.0f}h, "
+    rep = backtest_report(lg, f"{ASSET} (SL buffer {SL_ATR_MULT} ATR, min R:R {MIN_RR}, {tp_txt}, time stop {TIME_STOP_H:.0f}h, "
                               f"vol {'on' if VOL_REQUIRED else 'off'}, BTC {'on' if btc else 'off'}"
                               f"{', filters: ' + ', '.join(flt) if flt else ''})")
     send(rep + half_report(lg))
@@ -898,6 +912,7 @@ def run_backtest(days):
             send(bd[i:i + 3800])
     except Exception as e:
         print("breakdown failed:", e)
+
 
 # ------------------------------- main -----------------------------------
 def btc_blocks(side, data):
@@ -966,7 +981,7 @@ def main():
             days = float(args[i + 1])
         except Exception:
             days = 60.0
-        run_backtest(min(max(days, 7.0), 180.0))
+        run_backtest(min(max(days, 7.0), 365.0))
         return
     data = load_all(now)
     lg = load_log()
