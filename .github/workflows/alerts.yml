@@ -53,6 +53,8 @@ jobs:
           MAX_ATR_PCT: ${{ vars.MAX_ATR_PCT }}
           MAX_VOL_RATIO: ${{ vars.MAX_VOL_RATIO }}
           FLIPPED_ONLY: ${{ vars.FLIPPED_ONLY }}
+          STRATEGIES: ${{ vars.STRATEGIES }}
+          RANGE_HOURS: ${{ vars.RANGE_HOURS }}
           MODE: ${{ github.event.inputs.mode }}
           DAYS: ${{ github.event.inputs.days }}
           ASSET: ${{ github.event.inputs.asset }}
