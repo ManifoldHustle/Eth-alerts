@@ -10,8 +10,11 @@ on:
         description: "run | test | status | report | backtest"
         default: "run"
       days:
-        description: "backtest only: days of history (7-180)"
+        description: "backtest only: days of history (7-365)"
         default: "60"
+      asset:
+        description: "backtest only: market to test, e.g. ETH, BTC, SUI"
+        default: "ETH"
 
 permissions:
   contents: write
@@ -52,6 +55,7 @@ jobs:
           FLIPPED_ONLY: ${{ vars.FLIPPED_ONLY }}
           MODE: ${{ github.event.inputs.mode }}
           DAYS: ${{ github.event.inputs.days }}
+          ASSET: ${{ github.event.inputs.asset }}
         run: |
           case "$MODE" in
             test) python alert_bot.py --test-telegram ;;
