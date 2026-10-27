@@ -1,3 +1,26 @@
 {
- "alerts": []
+ "alerts": [
+  {
+   "id": "near:long:1793097000",
+   "kind": "near",
+   "side": "long",
+   "t0": 1793097000,
+   "label": "range low (bounce to mid)",
+   "level": 2290.71,
+   "entry": 2300.65,
+   "sl": 2283.47,
+   "tp1": 2323.42,
+   "tp2": null,
+   "risk": 17.18,
+   "rr": 1.33,
+   "score": 5,
+   "issues": [
+    "BTC 1h trend is down"
+   ],
+   "stage": "open",
+   "result": null,
+   "R": null,
+   "closed_t": null
+  }
+ ]
 }
