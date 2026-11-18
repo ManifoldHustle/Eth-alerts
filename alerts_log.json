@@ -21,6 +21,29 @@
    "result": "TP",
    "R": 1.33,
    "closed_t": 1793104200
+  },
+  {
+   "id": "near:long:1795021200",
+   "kind": "near",
+   "side": "long",
+   "t0": 1795021200,
+   "label": "range low (bounce to mid)",
+   "level": 1730.92,
+   "entry": 1747.43,
+   "sl": 1721.33,
+   "tp1": 1782.49,
+   "tp2": null,
+   "risk": 26.1,
+   "rr": 1.34,
+   "score": 4,
+   "issues": [
+    "volume on the confirmation candle is below its 20-candle average",
+    "BTC 1h trend is down"
+   ],
+   "stage": "open",
+   "result": null,
+   "R": null,
+   "closed_t": null
   }
  ]
 }
