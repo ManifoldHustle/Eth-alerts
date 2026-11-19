@@ -44,6 +44,28 @@
    "result": "TP",
    "R": 1.34,
    "closed_t": 1795023900
+  },
+  {
+   "id": "near:long:1795126500",
+   "kind": "near",
+   "side": "long",
+   "t0": 1795126500,
+   "label": "range low (bounce to mid)",
+   "level": 1730.92,
+   "entry": 1746.85,
+   "sl": 1720.92,
+   "tp1": 1778.2,
+   "tp2": null,
+   "risk": 25.93,
+   "rr": 1.21,
+   "score": 5,
+   "issues": [
+    "BTC 1h trend is down"
+   ],
+   "stage": "open",
+   "result": null,
+   "R": null,
+   "closed_t": null
   }
  ]
 }
