@@ -63,9 +63,9 @@
     "BTC 1h trend is down"
    ],
    "stage": "open",
-   "result": null,
-   "R": null,
-   "closed_t": null
+   "result": "SL",
+   "R": -1.0,
+   "closed_t": 1795149900
   }
  ]
 }
